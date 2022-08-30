@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+
+</body>
+
+
+    var questions = []
+    var sources = {}
+    var questionIdx = 0
+    var gameScore = 0
+    var player = null
+    // var drone = null
+    const MAXSCORE = 1200
+
+    function animateCSS(element, animation, prefix = 'animate__') {
+      return new Promise((resolve, reject) => {
+        const animationName = `${prefix}${animation}`;
+        // const node = document.querySelector(element);
+        const node = element instanceof HTMLElement ? element : document.querySelector(element)
+
+        node.classList.add(`${prefix}animated`, animationName);
+
+        function handleAnimationEnd(event) {
+          event.stopPropagation();
+          node.classList.remove(`${prefix}animated`, animationName);
+          resolve('Animation ended');
+        }
+
+        node.addEventListener('animationend', handleAnimationEnd, {once: true});
+      })
+    }
+
+    async function gatherSources() {
+      questions.forEach( q => {
+        let node = document.createElement('div')
+        node.innerHTML = q.followup
+
+        node.querySelectorAll('span[style="color:#000000"]').forEach( n => n.replaceWith(...n.childNodes) )
+        // node.querySelectorAll('span[style^=color]').forEach( n => n.replaceWith(...n.childNodes) )
+
+        node.querySelectorAll('strong > em, em > strong').forEach( async n => {
+          const targetNode = n.parentElement.nextSibling
+          if (!targetNode) {
+            // console.warn('could not find target node for', n)
+            return
+          }
+          const targetRef = targetNode.textContent.match(/^\s*\[(.+)\]/) //[1]
+          if (!targetRef) {
+            // console.warn('could not find target ref for', targetNode)
+            return
+          }
+          if (isNaN(Number(targetRef[1]))) {
+            // console.log('  gatherSources', targetRef[1], '-', n.textContent, '-', targetNode.textContent)
+            sources[targetRef[1].toLowerCase()] = '(not available)'
+          }
+        })
+      })
+      // if (Object.keys(sources).length > 0) sources['mediabiasfactcheck.com'] = '(not available)'
+      // console.log('sources', Object.keys(sources))
+      const resp = await request(`source_lookup?lower=in.(${Object.keys(sources).join(',')})`)
+      // console.log('resp', resp)
+      // resp.forEach( r => sources[r.lower] = r.description)
+      resp.forEach( r => {
+        sources[r.lower] = r.description
+      })
+      // console.log('sources', sources)
+      return sources
+    }
+
+    async function informGameRunner(questionScore, tries) {
+      if (player == null) return // running single-player or test
+      console.log('informGameRunner', player, questionScore, tries)
+      player.question_scores.push(questionScore)
+      player.question_tries.push(tries)
+      player.score = gameScore
+      const res = await request('player', player, {isUpsert: true})
+      // {
+      //   question_scores: player.question_scores,
+      //   question_tries: player.question_tries,
+      //   score: player.score
+      // })
+      console.log('  res', res)
+      // const roomName = Object.keys(drone.rooms)[0]
+      // // console.log('about to inform game runner question', questionIdx, 'score', gameScore, 'room', roomName)
+      // drone.publish({room: roomName, message: {
+      //   questionNo: questionIdx,
+      //   qScore: questionScore,
+      //   tries: tries,
+      //   gScore: gameScore
+      // }})
+    }
+
+    async function displayQuestion() {
+
+      async function respond(evt) {
+        evt.preventDefault()
+        const btn = evt.target
+        let choiceNo = btn.dataset.no || btn.closest('button').dataset.no
+        // console.log('respond', choiceNo, choiceNo == question.correct_choice ? 'right' : 'wrong')
+        btn.classList.add('selected')
+        animateCSS(evt.target, 'pulse')
+        await delay(1500)
+        btn.classList.remove('selected')
+        if (choiceNo == question.correct_choice) {
+          // console.log('right')
+          btn.classList.add('right-choice')
+          let buf = btn.textContent
+          btn.innerHTML = 'Correct!' + ' &#128516;'
+          gameScore = gameScore + questionScore
+          $('#header-game-score').textContent = gameScore
+          // console.log('right choice tries', tries, 'questionScore', questionScore)
+          informGameRunner(questionScore, tries)
+          await delay(1000)
+          displayFollowup()
+        }
+        else {
+          // console.log('wrong')
+          btn.classList.add('wrong-choice')
+          let buf = btn.textContent
+          btn.innerHTML = '&#128533; ' + 'Try again...'
+          await delay(1200)
+          btn.textContent = buf
+          btn.classList.remove('wrong-choice')
+          btn.disabled = true
+          btn.style.setProperty('text-decoration', 'line-through')
+          // evt.target.classList.add('wrong-choice')
+          // questionScore = Math.floor(questionScore / 2)
+          tries += 1
+          // questionScore = tries == 1 && choiceNames.length > 2 ? Math.floor(questionScore / 2) : 0 @@@ this seems too tough
+          questionScore = Math.floor(questionScore / tries)
+          console.log('wrong choice tries', tries, 'questionScore', questionScore)
+          // $('#header-question-score').textContent = questionScore
+        }
+
+      }
+
+      async function displayFollowup() {
+        await animateCSS('#question-content', 'fadeOut')
+        $('#question-content').hidden = true
+        // console.log('displayFollowup','last one?', questionIdx, questions.length)
+        // $('#question-content').innerHTML = question.followup + '<hr><button id="btn-next" class="choice">Next Question</button>'
+        $('#question-content').innerHTML = `${question.followup}<hr><button id="btn-next" class="choice">${questionIdx >= questions.length ? 'Continue to Score' : 'Next Question'}</button>`
+        $('#btn-next').onclick = displayQuestion
+        prepNotations()
+        window.scrollTo(0, 0)
+        $('#question-content').hidden = false
+        animateCSS('#question-content', 'fadeIn')
+      }
+
+      async function prepNotations() {
+        // necessary because these spans confuse our hint notation
+        // better solution is to remove from database, but I don't want to take that risk at this stage of the project
+        document.querySelectorAll('span[style="color:#000000"]').forEach( node => {
+          node.replaceWith(...node.childNodes)
+        })
+        // document.querySelectorAll('span[style^=color]').forEach( node => node.replaceWith(...node.childNodes) )
+
+        document.querySelectorAll('strong > em, em > strong').forEach( async n => {
+          const targetNode = n.parentElement.nextSibling
+          if (!targetNode) {
+            // console.warn('could not find target node for', n)
+            // debugger seems these only pop up when recursing on prepNotations - recursion disabled for now
+            return
+          }
+          const targetRef = targetNode.textContent.match(/^\s*\[(.+)\]/)
+          if (!targetRef) {
+            // console.warn('could not find target ref for', targetNode)
+            // debugger
+            return
+          }
+          targetNode.textContent = targetNode.textContent.replace(/^\s*\[(.+)\]/, '') //removes the part of the text content that contains the brackets and targetRef
+          let ref = targetRef[1]
+
+          const target = n.textContent
+          let content = isNaN(Number(ref)) ? sources[ref.toLowerCase()] : hints[Number(ref) - 1]
+          if (!content) { // likely a source from a hint or source, so not preloaded
+            const resp = await request(`source_lookup?lower=eq.${ref.toLowerCase()}`)
+            content = resp[0].description
+          }
+          // console.log('ref', ref, 'target', target, 'content', content)
+          let idref = ref.replace(/\W/g, '-')
+          // console.log(idref, n, 'check |')
+          n.parentNode.outerHTML = `<label for="mc-${idref}" class="pop-target">${target}</label><input type="checkbox" id="mc-${idref}" class="modal"><div><div class="popup card"><label for="mc-${idref}" class="overlay"></label><label for="mc-${idref}" style="position: absolute; top: 0; right: 0; cursor: pointer; ">&#10006;</label><p style="margin-top: 1.1rem">${content}</p></div></div>`
+          document.querySelectorAll('span[style="color:#000000"]').forEach( node => node.replaceWith(...node.childNodes) )
+          // document.querySelectorAll('span[style^=color]').forEach( node => node.replaceWith(...node.childNodes) )
+
+          prepNotations()
+        })
+
+        document.querySelectorAll('a[href^="http"]').forEach( a => {
+          if (a.target != '_blank') a.target = '_blank'
+        })
+      }
+
+      const classColors = {
+        Civics: {text: '#F19545', bkgd: ''},
+        News:   {text: '#d52ada', bkgd: ''},
+        Voting: {text: '#0098dc', bkgd: ''},
+      }
+
+      // $('#followup-control').checked = false
+      $('#envelope').hidden = true
+      $('#question-content').hidden = true
+
+      //@@@ for testing end-game
+      if (questionIdx >= questions.length) {
+      // if (true) {
+        // $('header').hidden = true
+        // $('#game-score').textContent = gameScore
+        // if ($('#player_handle').value) $('#player-name').textContent = ', ' + $('#player_handle').value
+        // $('#game-over').hidden = false
+        // let hdg = $('#game-over h3')
+        // await animateCSS(hdg, 'fadeIn')
+        // await delay(1200)
+        // await animateCSS(hdg, 'fadeOut')
+        location.assign(`./results.html#score=${gameScore}`)
+        // document.querySelectorAll('#wrap-up .final-btn').forEach( btn => {
+        //   // console.log('alert on', btn, btn.textContent)
+        //   if (btn.textContent == 'Play Again?') btn.onclick = () => location.assign('./choose-a-game.html')
+        // })
+        // hdg.style.display = 'none'
+        // const badgeElem = $(`#badge-${gameScore >= 1.0 * MAXSCORE ? '4' : gameScore >= .7 * MAXSCORE ? '3' : gameScore >= .4 * MAXSCORE ? '2' : '1' }`)
+        // badgeElem.hidden = false
+        // $('#wrap-up').hidden = false
+        // animateCSS('#wrap-up', 'fadeIn')
+        // startFireworks()
+        return
+      }
+
+      const question = questions[questionIdx]
+      questionIdx++
+      const choiceNames = question.choices.trim().split(/<ol>\s*<li>\s*|\s*<\/li>\s*<li>\s*|\s*<\/li>\s*<\/ol>/).slice(1,-1)
+      const choices = choiceNames.map( (n, i) => `\n<button data-no="${i+1}" class="choice">${n}</button>` ).join('\n')
+      const hints = question.hints ? question.hints.trim().split(/<ol>\s*<li>\s*|\s*<\/li>\s*<li>\s*|\s*<\/li>\s*<\/ol>/).slice(1,-1) : ''
+
+      let progPct = Math.floor(questionIdx / questions.length * 1000)
+      // console.log('displayQuestion', questionIdx, question.title)
+
+      $('#question-content').innerHTML = question.question_content + '' + choices
+      // $('#game .color-bar').style.backgroundColor = question.background_color || classColors[question.class].bkgd
+      $('#game .categories').style.backgroundColor = question.background_color || classColors[question.class].bkgd
+      $('#game .image').style.backgroundColor = question.background_color || classColors[question.class].bkgd
+      $('#game .categories').style.color = question.text_color || classColors[question.class].text
+      $('#game .categories span').textContent = question.categories
+      // $('#game .image img').src = question.bug_path_name || `./images/bugs/${question.class.toLowerCase()}.svg`
+      $('#game .image img').src = question.bug_path_name || `./images/icons/${question.class.toLowerCase()}.png`
+      $('#envelope').hidden = false
+
+      let progNode = $('#game header progress')
+      let progNow = Number(progNode.value)
+      // console.log('prog', progNow, 'of', progPct)
+      if (questions.length > 1) while (progNow <= progPct) {
+        progNow += 1
+        // console.log(progNow)
+        progNode.value = progNow
+        await delay(5)
+      }
+
+      document.querySelectorAll('.choice').forEach( btn => btn.onclick = respond)
+      prepNotations()
+      let questionScore = Math.floor(MAXSCORE / questions.length)
+      let tries = 1
+      // $('#header-question-score').textContent = questionScore
+      $('#header-question-no').textContent = `${questionIdx} of ${questions.length}`
+      animateCSS('#envelope', 'fadeIn')
+      await delay(1000)
+      $('#question-content').hidden = false
+      animateCSS('#question-content', 'fadeIn')
+    }
+
+    async function fetchQuestions(game) {
+      let gc = await request(`game_category?select=categories,no_questions&game=eq.${game}&no_questions=gt.0`)
+      // console.log('gc', gc)
+      let result = await Promise.all(gc.map( async cat => {
+        const buf = await request( `random_question?select=title&game=eq.${game}&categories=eq.${cat.categories}&limit=${cat.no_questions}`)
+        return buf.map( r => ({title: r.title, categories: cat.categories}) )
+      }))
+      return result.flat().sort(() => Math.random() - 0.5).map( (r,i) => ({title: r.title, categories: r.categories, sequence: i}) )
+    }
+
+    async function startSinglePlayer(gameName) {
+      console.log('Single player game of', gameName)
+      const resp = await fetch('https://ipapi.co/json')
+      const here = await resp.json()
+      const location = `${here.city}, ${here.region_code}`
+      console.log('single player location', location)
+      const playId = (await request('play', {game: gameName, play_code: 0, location: location}))[0].play
+      // console.log('ready to start game', params.game, playId)
+      const qs = await fetchQuestions(gameName)
+      await request('question_play', qs.map( r => ({question: r.title, play: playId, categories: r.categories, sequence: r.sequence}) ))
+
+      questions = await request(`play_detail?play=eq.${playId}`)
+      // gameScore = 1200 % questions.length
+      sources = await gatherSources()
+      // console.log('questions', questions)
+      $('#game').hidden = false
+      displayQuestion()
+      return
+    }
+
+    async function joinMultiPlayer(gameLeader) {
+      console.log('Multi player game with', gameLeader)
+
+      $('#player-handle').value = localStorage.playerHandle || ''
+      $('#leader-handle').value = gameLeader || ''
+      $('#modal-player-handle').click()
+      setTimeout( () => $('#player-handle').focus(), 200)
+      $('#game').hidden = false
+
+      $('#modal-player-handle').onclick = async evt => {
+        if ($('#player-handle').value == '') {
+          alert('Please enter your handle.')
+          window.location.reload(false)
+        }
+        if ($('#leader-handle').value == '') {
+          alert('Please enter the handle for your game leader.')
+          window.location.reload(false)
+        }
+        localStorage.playerHandle = $('#player-handle').value
+        gameLeader = $('#leader-handle').value
+        console.log('gameLeader')
+        // const playId = (await request(`game_leader?select=current_play&leader_handle=eq.${gameLeader}`))[0].current_play
+        const resLeader = await request(`game_leader?select=current_play&leader_handle=eq.${gameLeader}`)
+        console.log('resLeader', resLeader)
+        if (resLeader.length == 0) {
+          alert(`Could not find a game leader named '${gameLeader}'.`)
+          window.location.reload(false)
+        }
+        const playId = resLeader[0].current_play
+        console.log('play', playId)
+
+        player = (await request('player', {
+          play: playId,
+          handle:localStorage.playerHandle,
+          question_scores: '{}',
+          question_tries: '{}',
+          score: 0,
+        }))[0]
+        console.log('player', player)
+        if (!player) {
+          alert('Could not save Player info.')
+          window.location.reload(false)
+        }
+        questions = await request(`play_detail?play=eq.${playId}`)
+        console.log('questions', questions)
+        sources = await gatherSources()
+        console.log('sources', sources)
+
+        displayQuestion()
+      }
+  }
+
+    async function testSingleQuestion(questionName) {
+      console.log('test of single question', questionName)
+      questions = await request(`question?title=eq.${questionName}`)
+      if (questions.length != 1) {
+        alert(`Could not find question '${questionName}'.`)
+        return
+      }
+      sources = await gatherSources()
+      let q = questions[0]
+      // console.log('fetched', q)
+      let cats = q.categories.toLowerCase()
+      q.class = cats.includes('news') ? 'News' : cats.includes('voting') ? 'Voting' : 'Civics'
+
+      $('#game').hidden = false
+      displayQuestion()
+      return
+    }
+
+
+    async function main() {
+      let params = {}
+      new URLSearchParams(location.hash.slice(1)).forEach( (v, k) => params[k] = `${v.replaceAll(/\s/mg, ' ')}`)
+      console.log('params', params)
+      if (Object.keys(params).length === 0) {
+        console.log('no params, join an unspecified multiplayer game')
+        joinMultiPlayer(null)
+      }
+      else {
+        if (params.gameName) startSinglePlayer(params.gameName)
+        else if (params.gameLeader) joinMultiPlayer(params.gameLeader)
+        else if (params.question) testSingleQuestion(params.question)
+        else alert('Unrecognized parameter in '+ JSON.stringify(Object.keys(params)))
+      }
+
+//       if (params.question) {
+//         // console.log('question', params.question)
+//         questions = await request(`question?title=eq.${params.question}`)
+//         if (questions.length != 1) {
+//           alert(`Could not find question '${params.question}'.`)
+//           return
+//         }
+//         sources = await gatherSources()
+//         let q = questions[0]
+//         // console.log('fetched', q)
+//         let cats = q.categories.toLowerCase()
+//         q.class = cats.includes('news') ? 'News' : cats.includes('voting') ? 'Voting' : 'Civics'
+
+//         $('#game').hidden = false
+//         displayQuestion()
+//         return
+//       }
+//       if (params.game) {
+//         // console.log('game', params.game)
+//         const resp = await fetch('https://ipapi.co/json')
+//         const here = await resp.json()
+//         const location = `${here.city}, ${here.region_code}`
+//         // console.log('single player location', location)
+//         const playId = (await request('play', {game: params.game, play_code: 0, location: location}))[0].play
+//         // console.log('ready to start game', params.game, playId)
+//         const qs = await fetchQuestions(params.game)
+//         await request('question_play', qs.map( r => ({question: r.title, play: playId, categories: r.categories, sequence: r.sequence}) ))
+
+//         questions = await request(`play_detail?play=eq.${playId}`)
+//         // gameScore = 1200 % questions.length
+//         sources = await gatherSources()
+//         // console.log('questions', questions)
+//         $('#game').hidden = false
+//         displayQuestion()
+//         return
+//       }
+//       $('#pre-game').hidden = false
+//       if (params.code) $('#play_code').value = params.code
+//       $('#btn-register').onclick = async evt => {
+//         $('#pre-game').hidden = true
+//         $('#game').hidden = false
+
+//         drone = new Scaledrone('s8VguFUX78IuhUH5', {data: {name: $('#player_handle').value}})
+
+//         drone.on('open', evt => console.log('Channel opened.', evt || '') )
+//         drone.on('err', err => alert(`Game channel failed to open: ${JSON.stringify(err)}`) )
+//         drone.on('close', evt => console.log('Channel closed.', evt || '') )
+
+//         const room = drone.subscribe(`observable-game-${$('#play_code').value}`)
+//         room.on('open', evt => console.log('Room opened.', evt || '') )
+//         room.on('err', err => alert(`Game room failed to open: ${JSON.stringify(err)}`) )
+//         room.on('close', evt => console.log('Room closed.', evt || '') )
+//         room.on('members', async m => {
+//           let buf = m.filter( r => r.clientData && r.clientData.name.endsWith('** Game Runner **') )
+//           if (buf.length == 0 || !buf[0].clientData) alert(`Could not find Game Runner for game '${$('#play_code').value}'.
+// Check that you have the right number. Refresh this page and try again.`)
+//           playId = buf[0].clientData.play
+//           questions = await request(`play_detail?play=eq.${playId}`)
+//           // gameScore = 1200 % questions.length
+//           sources = await gatherSources()
+//           displayQuestion()
+//         })
+//         // room.on('message', msg => {
+//         //   // console.log('received message', msg)
+//         //   if (msg.data.hasOwnProperty('finalScores')) {
+//         //     const scores = msg.data.finalScores
+//         //     $('#see-leaderboard').disabled = false
+//         //     $('#see-leaderboard').onclick = () => {
+//         //       $('#wrap-up').hidden = true
+//         //       $('#leaderboard').hidden = false
+//         //       $('#leaderboard tbody').innerHTML = scores.map( s => `<tr><td>${s.handle}</td><td>${s.score}</td></tr>` ).join('')
+//         //     }
+//         //     // alert('finalScores\n' + JSON.stringify(msg.data.finalScores))
+//         //   }
+//         // })
+//       }
+    }
+
+    // delete localStorage.access_token // keep this anonymous
+    document.onkeypress = e => {
+      if (e.ctrlKey && e.key == '\\') {
+        let title = questions[questionIdx-1].title
+        // console.log('ready to open', title)
+        window.open(`https://v2-editor.verifyit.buzz/question-form#title=${title}`, '_blank')
+      }
+    }
+    main()
