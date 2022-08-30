@@ -7,7 +7,7 @@ from flask_login import login_user,logout_user, login_required, current_user
 @app.route("/")
 @app.route("/home")
 def home_page():
-    return render_template("question.html")
+    return render_template("home.html")
 @app.route("/join",methods=["GET","POST"])
 def join_page():
     form=JoinForm()
@@ -18,3 +18,5 @@ def join_page():
 @app.route("/waiting/<id>")
 def waiting_page(id):
     return render_template("waitscreenplayer.html")
+def question_page():
+    return render_template("question.html")
