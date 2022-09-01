@@ -18,5 +18,6 @@ def join_page():
 @app.route("/waiting/<id>")
 def waiting_page(id):
     return render_template("waitscreenplayer.html")
+@app.route("/question")
 def question_page():
     return render_template("question.html")
